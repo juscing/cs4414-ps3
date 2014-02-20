@@ -13,6 +13,9 @@
 
 // To see debug! outputs set the RUST_LOG environment variable, e.g.: export RUST_LOG="zhtta=debug"
 
+// Justin Ingram (jci5kb)
+// Brian Whitlow (btw2cv)
+
 #[feature(globs)];
 extern mod extra;
 
@@ -24,6 +27,7 @@ use std::hashmap::HashMap;
 
 use extra::getopts;
 use extra::arc::MutexArc;
+use extra::arc::RWArc;
 
 static SERVER_NAME : &'static str = "Zhtta Version 0.5";
 
@@ -40,8 +44,6 @@ static COUNTER_STYLE : &'static str = "<doctype !html><html><head><title>Hello, 
                     h2 { font-size:2cm; text-align: center; color: black; text-shadow: 0 0 4mm green }
              </style></head>
              <body>";
-
-static mut visitor_count : uint = 0;
 
 struct HTTP_Request {
     // Use peer_name as the key to access TcpStream in hashmap. 
@@ -62,6 +64,8 @@ struct WebServer {
     
     notify_port: Port<()>,
     shared_notify_chan: SharedChan<()>,
+    
+    visitor_count: RWArc<uint>,
 }
 
 impl WebServer {
@@ -79,7 +83,9 @@ impl WebServer {
             stream_map_arc: MutexArc::new(HashMap::new()),
             
             notify_port: notify_port,
-            shared_notify_chan: shared_notify_chan,        
+            shared_notify_chan: shared_notify_chan,      
+            
+            visitor_count: RWArc::new(0),
         }
     }
     
@@ -95,7 +101,9 @@ impl WebServer {
         let request_queue_arc = self.request_queue_arc.clone();
         let shared_notify_chan = self.shared_notify_chan.clone();
         let stream_map_arc = self.stream_map_arc.clone();
-                
+        
+        let counter = self.visitor_count.clone();
+        
         spawn(proc() {
             let mut acceptor = net::tcp::TcpListener::bind(addr).listen();
             println!("{:s} listening on {:s} (serving from: {:s}).", 
@@ -107,10 +115,14 @@ impl WebServer {
                 
                 let notify_chan = shared_notify_chan.clone();
                 let stream_map_arc = stream_map_arc.clone();
+                let countertwo = counter.clone();
                 
                 // Spawn a task to handle the connection.
                 spawn(proc() {
-                    unsafe { visitor_count += 1; } // TODO: Fix unsafe counter
+                    // unsafe { visitor_count += 1; } // TODO: Fix unsafe counter
+                    countertwo.write(|state| {
+			*state += 1;
+                    });
                     let request_queue_arc = queue_port.recv();
                   
                     let mut stream = stream;
@@ -139,7 +151,11 @@ impl WebServer {
                              
                         if path_str == ~"./" {
                             debug!("===== Counter Page request =====");
-                            WebServer::respond_with_counter_page(stream);
+                            let mut countcopy = 0;
+                            countertwo.read(|state| {
+				countcopy = state.clone();
+                            });
+                            WebServer::respond_with_counter_page(stream, countcopy);
                             debug!("=====Terminated connection from [{:s}].=====", peer_name);
                         } else if !path_obj.exists() || path_obj.is_dir() {
                             debug!("===== Error page request =====");
@@ -168,13 +184,13 @@ impl WebServer {
     }
 
     // TODO: Safe visitor counter.
-    fn respond_with_counter_page(stream: Option<std::io::net::tcp::TcpStream>) {
+    fn respond_with_counter_page(stream: Option<std::io::net::tcp::TcpStream>, count: uint) {
         let mut stream = stream;
         let response: ~str = 
             format!("{:s}{:s}<h1>Greetings, Krusty!</h1>
                      <h2>Visitor count: {:u}</h2></body></html>\r\n", 
                     HTTP_OK, COUNTER_STYLE, 
-                    unsafe { visitor_count } );
+                    count );
         debug!("Responding to counter request");
         stream.write(response.as_bytes());
     }

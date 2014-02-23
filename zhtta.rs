@@ -15,9 +15,9 @@
 
 // Justin Ingram (jci5kb)
 // Brian Whitlow (btw2cv)
-
 #[feature(globs)];
 extern mod extra;
+
 
 use std::io::*;
 use std::io::net::ip::{SocketAddr};
@@ -28,6 +28,11 @@ use std::hashmap::HashMap;
 use extra::getopts;
 use extra::arc::MutexArc;
 use extra::arc::RWArc;
+
+mod gash;
+
+
+
 
 static SERVER_NAME : &'static str = "Zhtta Version 0.5";
 
@@ -207,7 +212,40 @@ impl WebServer {
     // TODO: Server-side gashing.
     fn respond_with_dynamic_page(stream: Option<std::io::net::tcp::TcpStream>, path: &Path) {
         // for now, just serve as static file
-        WebServer::respond_with_static_file(stream, path);
+        //WebServer::respond_with_static_file(stream, path);
+        let mut stream = stream;
+        let mut file_reader = File::open(path).expect("Invalid file!");
+        let file_content  = file_reader.read_to_end();
+        let raw_content = str::from_utf8(file_content);
+
+        let split_content: ~[&str]  = raw_content.split_str("<!--").collect();
+        if split_content.len() == 1 {
+            stream.write(HTTP_OK.as_bytes());
+            stream.write(raw_content.as_bytes());
+        } else {
+            stream.write(HTTP_OK.as_bytes());
+            for i in range (0, split_content.len()) {
+
+                let content: ~[&str]  = split_content[i].split_str("-->").collect();
+                if content.len() > 1 {
+                    match content[0].slice_to(10) {
+                        &"#exec cmd=" => {
+                            let cmd: ~[&str] = content[0].split('"').collect();
+                            let response = gash::run_cmdline(cmd[1]);
+
+                            stream.write(response.as_bytes());
+                        }
+                        _ => {
+                            debug!("This command doesn't seem to make sense: {:s}", content[0])
+                        }
+                    }
+
+                } else {
+                    stream.write(split_content[i].as_bytes());
+                }
+            }
+        }
+        
     }
     
     // TODO: Smarter Scheduling.

@@ -124,7 +124,6 @@ impl WebServer {
                 
                 // Spawn a task to handle the connection.
                 spawn(proc() {
-                    // unsafe { visitor_count += 1; } // TODO: Fix unsafe counter
                     countertwo.write(|state| {
 			*state += 1;
                     });
@@ -188,7 +187,6 @@ impl WebServer {
         stream.write(msg.as_bytes());
     }
 
-    // TODO: Safe visitor counter.
     fn respond_with_counter_page(stream: Option<std::io::net::tcp::TcpStream>, count: uint) {
         let mut stream = stream;
         let response: ~str = 
@@ -206,7 +204,16 @@ impl WebServer {
         let mut stream = stream;
         let mut file_reader = File::open(path).expect("Invalid file!");
         stream.write(HTTP_OK.as_bytes());
-        stream.write(file_reader.read_to_end());
+        
+        //Justin's better file streaming...
+        while !file_reader.eof() {
+	    //let x = file_reader.read_byte();
+	    match file_reader.read_byte() {
+		Some(bytes) => {stream.write_u8(bytes);}
+		None => {}
+	    }
+        }
+        //stream.write(file_reader.read_to_end());
     }
     
     // TODO: Server-side gashing.
@@ -314,7 +321,7 @@ impl WebServer {
                 });
             }
             
-            // TODO: Spawning more tasks to respond the dequeued requests concurrently. You may need a semophore to control the concurrency.
+            // TODO: Spawinng more tasks to respond the dequeued requests concurrently. You may need a semophore to control the concurrency.
             let stream = stream_port.recv();
             WebServer::respond_with_static_file(stream, request.path);
             // Close stream automatically.

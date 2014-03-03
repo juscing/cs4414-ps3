@@ -44,6 +44,8 @@ static WWW_DIR : &'static str = "./www";
 static HTTP_OK : &'static str = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n";
 static HTTP_BAD : &'static str = "HTTP/1.1 404 Not Found\r\n\r\n";
 
+static HTTP_OK_BIN : &'static str = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream;";
+
 static COUNTER_STYLE : &'static str = "<doctype !html><html><head><title>Hello, Rust!</title>
              <style>body { background-color: #884414; color: #FFEEAA}
                     h1 { font-size:2cm; text-align: center; color: black; text-shadow: 0 0 4mm red }
@@ -208,7 +210,7 @@ impl WebServer {
     fn respond_with_static_file(stream: Option<std::io::net::tcp::TcpStream>, path: &Path, cache: &mut LruCache<~str, ~[u8]>) {
         let mut stream = stream;
         let mut file_reader = File::open(path).expect("Invalid file!");
-        stream.write(HTTP_OK.as_bytes());
+        stream.write(HTTP_OK_BIN.as_bytes());
         
         let mut storevec: ~[u8] = ~[];
         //Justin's better file streaming...

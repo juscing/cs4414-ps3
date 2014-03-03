@@ -28,6 +28,7 @@ use std::hashmap::HashMap;
 use extra::getopts;
 use extra::arc::MutexArc;
 use extra::arc::RWArc;
+use extra::lru_cache::LruCache;
 
 mod gash;
 
@@ -71,6 +72,8 @@ struct WebServer {
     shared_notify_chan: SharedChan<()>,
     
     visitor_count: RWArc<uint>,
+    
+    cache: LruCache<~str, ~[u8]>,
 }
 
 impl WebServer {
@@ -91,6 +94,8 @@ impl WebServer {
             shared_notify_chan: shared_notify_chan,      
             
             visitor_count: RWArc::new(0),
+            
+            cache: LruCache::new(10),
         }
     }
     
@@ -200,19 +205,43 @@ impl WebServer {
     
     // TODO: Streaming file.
     // TODO: Application-layer file caching.
-    fn respond_with_static_file(stream: Option<std::io::net::tcp::TcpStream>, path: &Path) {
+    fn respond_with_static_file(stream: Option<std::io::net::tcp::TcpStream>, path: &Path, cache: &mut LruCache<~str, ~[u8]>) {
         let mut stream = stream;
         let mut file_reader = File::open(path).expect("Invalid file!");
         stream.write(HTTP_OK.as_bytes());
         
+        let mut storevec: ~[u8] = ~[];
         //Justin's better file streaming...
-        while !file_reader.eof() {
-	    //let x = file_reader.read_byte();
-	    match file_reader.read_byte() {
-		Some(bytes) => {stream.write_u8(bytes);}
-		None => {}
+        
+        let path_str = match path.as_str() {
+	    Some(stringy) => {stringy.to_owned()}
+	    None => {fail!("Path not representable in UTF-8");}
+        };
+        
+        let mut read_from_disk = false;
+        
+        match cache.get(&path_str) {
+	    Some(data) => {stream.write(*data);}
+	    None => {
+		while !file_reader.eof() {
+		    match file_reader.read_byte() {
+			Some(bytes) => {
+			    storevec.push(bytes);
+			    stream.write_u8(bytes);
+			}
+			None => {}
+		    }
+		}
+		read_from_disk = true;
 	    }
         }
+        
+        //I know this is weird but its something to do with a double borrow...
+        if read_from_disk {
+	    
+	    cache.put(path_str, storevec);
+        }
+        
         //stream.write(file_reader.read_to_end());
     }
     
@@ -323,7 +352,7 @@ impl WebServer {
             
             // TODO: Spawinng more tasks to respond the dequeued requests concurrently. You may need a semophore to control the concurrency.
             let stream = stream_port.recv();
-            WebServer::respond_with_static_file(stream, request.path);
+            WebServer::respond_with_static_file(stream, request.path, &mut self.cache);
             // Close stream automatically.
             debug!("=====Terminated connection from [{:s}].=====", request.peer_name);
         }

@@ -15,6 +15,8 @@
 
 // Justin Ingram (jci5kb)
 // Brian Whitlow (btw2cv)
+
+// Rust gzip credit vincasmiliunas on github
 #[feature(globs)];
 extern mod extra;
 
@@ -31,8 +33,7 @@ use extra::arc::RWArc;
 use extra::lru_cache::LruCache;
 
 mod gash;
-
-
+mod gzip;
 
 
 static SERVER_NAME : &'static str = "Zhtta Version 0.5";
@@ -221,9 +222,9 @@ impl WebServer {
         
         
         if path_str.ends_with(".html") {
-	    stream.write(HTTP_OK.as_bytes());
+	    stream.write(gzip::must_compress(HTTP_OK.as_bytes()));
         }else{
-	    stream.write(HTTP_OK_BIN.as_bytes());
+	    stream.write(gzip::must_compress(HTTP_OK_BIN.as_bytes()));
         }
         
         let mut read_from_disk = false;
@@ -234,8 +235,9 @@ impl WebServer {
 		while !file_reader.eof() {
 		    match file_reader.read_byte() {
 			Some(bytes) => {
-			    storevec.push(bytes);
-			    stream.write_u8(bytes);
+			    let comp = gzip::must_compress(bytes);
+			    storevec.push(comp);
+			    stream.write_u8(comp);
 			}
 			None => {}
 		    }

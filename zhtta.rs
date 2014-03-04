@@ -15,8 +15,6 @@
 
 // Justin Ingram (jci5kb)
 // Brian Whitlow (btw2cv)
-
-// Rust gzip credit vincasmiliunas on github
 #[feature(globs)];
 extern mod extra;
 

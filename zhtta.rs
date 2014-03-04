@@ -210,7 +210,6 @@ impl WebServer {
     fn respond_with_static_file(stream: Option<std::io::net::tcp::TcpStream>, path: &Path, cache: &mut LruCache<~str, ~[u8]>) {
         let mut stream = stream;
         let mut file_reader = File::open(path).expect("Invalid file!");
-        stream.write(HTTP_OK.as_bytes());
         
         let mut storevec: ~[u8] = ~[];
         //Justin's better file streaming...
@@ -219,6 +218,13 @@ impl WebServer {
 	    Some(stringy) => {stringy.to_owned()}
 	    None => {fail!("Path not representable in UTF-8");}
         };
+        
+        
+        if path_str.ends_with(".html") {
+	    stream.write(HTTP_OK.as_bytes());
+        }else{
+	    stream.write(HTTP_OK_BIN.as_bytes());
+        }
         
         let mut read_from_disk = false;
         

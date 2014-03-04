@@ -24,6 +24,7 @@ use std::io::net::ip::{SocketAddr};
 use std::{os, str, libc, from_str};
 use std::path::Path;
 use std::hashmap::HashMap;
+use std::io::buffered::BufferedReader;
 
 use extra::getopts;
 use extra::arc::MutexArc;
@@ -255,14 +256,16 @@ impl WebServer {
             }
         });
         if in_cache == false {
-            let mut file_reader = File::open(path).expect("Invalid file!");
+            let file_reader = File::open(path).expect("Invalid file!");
+            let mut br = BufferedReader::new(file_reader);
             debug!("Not in the Cache...");
             if path_str.ends_with(".html") {
                 stream.write(HTTP_OK.as_bytes());
             }else{
                 stream.write(HTTP_OK_BIN.as_bytes());
             }
-            while !file_reader.eof() {
+            while !br.eof() {
+		/*
                 match file_reader.read_byte() {
                     Some(bytes) => {
                         storevec.push(bytes);
@@ -270,6 +273,15 @@ impl WebServer {
                     }
                     None => {}
                 }
+                */
+                let l;
+                {
+		    let x = br.fill();
+		    l = x.len();
+		    stream.write(x);
+		    storevec.push_all_move(x.into_owned());
+                }
+                br.consume(l);
             }
             debug!("Waiting for LRU_Cache access for write...")
             cache.write(|state| {

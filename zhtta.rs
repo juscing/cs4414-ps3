@@ -81,6 +81,8 @@ struct WebServer {
     
     visitor_count: RWArc<uint>,
     dequeue_task_count: RWArc<uint>,
+
+    WahooFirst_count: RWArc<uint>,
     
     cache: RWArc<LruCache<~str, ~[u8]>>,
 }
@@ -103,6 +105,7 @@ impl WebServer {
             shared_notify_chan: shared_notify_chan,      
             
             visitor_count: RWArc::new(0),
+            WahooFirst_count: RWArc::new(0),
 
             dequeue_task_count: RWArc::new(0),
             
@@ -124,6 +127,8 @@ impl WebServer {
         let stream_map_arc = self.stream_map_arc.clone();
         
         let counter = self.visitor_count.clone();
+
+        let wahooTemp1 = self.WahooFirst_count.clone();
         
         spawn(proc() {
             let mut acceptor = net::tcp::TcpListener::bind(addr).listen();
@@ -137,6 +142,7 @@ impl WebServer {
                 let notify_chan = shared_notify_chan.clone();
                 let stream_map_arc = stream_map_arc.clone();
                 let countertwo = counter.clone();
+                let wahooTemp = wahooTemp1.clone();
                 
                 // Spawn a task to handle the connection.
                 spawn(proc() {
@@ -187,7 +193,8 @@ impl WebServer {
                             debug!("=====Terminated connection from [{:s}].=====", peer_name);
                         } else { 
                             debug!("===== Static Page request =====");
-                            WebServer::enqueue_static_file_request(stream, path_obj, stream_map_arc, request_queue_arc, notify_chan);
+                            
+                            WebServer::enqueue_static_file_request(stream, path_obj, stream_map_arc, request_queue_arc, notify_chan, wahooTemp);
                         }
                     }
                 });
@@ -219,7 +226,7 @@ impl WebServer {
     // TODO: Application-layer file caching.
     fn respond_with_static_file(stream: Option<std::io::net::tcp::TcpStream>, path: &Path, cache: RWArc<LruCache<~str, ~[u8]>>) {
         let mut stream = stream;
-        let mut file_reader = File::open(path).expect("Invalid file!");
+        
         
         let mut storevec: ~[u8] = ~[];
         //Justin's better file streaming...
@@ -229,14 +236,6 @@ impl WebServer {
 	    None => {fail!("Path not representable in UTF-8");}
         };
         
-        /*
-        if path_str.ends_with(".html") {
-	    stream.write(HTTP_OK.as_bytes());
-        }else{
-	    stream.write(HTTP_OK_BIN.as_bytes());
-        }
-        */
-        
                 
         debug!("Waiting for LRU_Cache access for read... ");
         let mut in_cache = true;
@@ -244,6 +243,7 @@ impl WebServer {
             debug!("Received LRU_Cache read access!");
             match state.get(&path_str) {
                 Some(data) => {
+                    debug!("Already in Cache!");
                     if path_str.ends_with(".html") {
                         stream.write(HTTP_OK_DEFLATE.as_bytes());
                     }else{
@@ -257,6 +257,8 @@ impl WebServer {
             }
         });
         if in_cache == false {
+            let mut file_reader = File::open(path).expect("Invalid file!");
+            debug!("Not in the Cache...");
             if path_str.ends_with(".html") {
                 stream.write(HTTP_OK.as_bytes());
             }else{
@@ -326,7 +328,7 @@ impl WebServer {
     }
     
     // TODO: Smarter Scheduling.
-    fn enqueue_static_file_request(stream: Option<std::io::net::tcp::TcpStream>, path_obj: &Path, stream_map_arc: MutexArc<HashMap<~str, Option<std::io::net::tcp::TcpStream>>>, req_queue_arc: MutexArc<~[HTTP_Request]>, notify_chan: SharedChan<()>) {
+    fn enqueue_static_file_request(stream: Option<std::io::net::tcp::TcpStream>, path_obj: &Path, stream_map_arc: MutexArc<HashMap<~str, Option<std::io::net::tcp::TcpStream>>>, req_queue_arc: MutexArc<~[HTTP_Request]>, notify_chan: SharedChan<()>, WahooFirst: RWArc<uint>) {
         // Save stream in hashmap for later response.
         let mut stream = stream;
         let peer_name = WebServer::get_peer_name(&mut stream);
@@ -354,15 +356,34 @@ impl WebServer {
         req_chan.send(req);
 
         debug!("Waiting for queue mutex lock.");
+
+        let mut WahooFirst_count = 0;
+        WahooFirst.read(|state| {
+            WahooFirst_count = state.clone();
+        });
         req_queue_arc.access(|local_req_queue| {
             debug!("Got queue mutex lock.");
             let req: HTTP_Request = req_port.recv();
             if (prioritize == false) {
-                local_req_queue.push(req);
+                let mut index = WahooFirst_count;
+                let compare_size = path_obj.stat().size;
+                let mut size_queuedfile = compare_size;
+
+                debug!("index: {:u} ", index);
+                while (index < local_req_queue.len()-1 && compare_size < size_queuedfile) {
+                    size_queuedfile = local_req_queue[index].path.stat().size;
+                    index += 1;
+                }
+                local_req_queue.insert(index,req);
             } else {
-                local_req_queue.insert(0, req);
+                local_req_queue.insert(WahooFirst_count, req);
+                WahooFirst_count += 1;
             }
             debug!("A new request enqueued, now the length of queue is {:u}.", local_req_queue.len());
+        });
+
+        WahooFirst.write(|state| {
+            *state = WahooFirst_count;
         });
         
         notify_chan.send(()); //  incoming notification to responder task.
@@ -402,8 +423,16 @@ impl WebServer {
                     stream_chan.send(stream);
                 });
             }
+
+            //If there is a priority WahooFirst, then it will be the first removed no matter what. 
             
-            // TODO: Spawinng more tasks to respond the dequeued requests concurrently. You may need a semophore to control the concurrency.
+            self.WahooFirst_count.write(|state| {
+                if state.clone() > 0 {
+                    *state = state.clone()-1;
+                }
+            });
+
+            
             let cacheclone = self.cache.clone();
             let mut num_threads = -1;
             while (num_threads < 0 || num_threads > 3*CORES_AVAILABLE) {

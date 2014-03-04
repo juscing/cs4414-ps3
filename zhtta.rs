@@ -57,6 +57,8 @@ static COUNTER_STYLE : &'static str = "<doctype !html><html><head><title>Hello, 
              </style></head>
              <body>";
 
+static CORES_AVAILABLE : uint = 1;
+
 struct HTTP_Request {
     // Use peer_name as the key to access TcpStream in hashmap. 
 
@@ -78,8 +80,9 @@ struct WebServer {
     shared_notify_chan: SharedChan<()>,
     
     visitor_count: RWArc<uint>,
+    dequeue_task_count: RWArc<uint>,
     
-    cache: LruCache<~str, ~[u8]>,
+    cache: RWArc<LruCache<~str, ~[u8]>>,
 }
 
 impl WebServer {
@@ -100,8 +103,10 @@ impl WebServer {
             shared_notify_chan: shared_notify_chan,      
             
             visitor_count: RWArc::new(0),
+
+            dequeue_task_count: RWArc::new(0),
             
-            cache: LruCache::new(10),
+            cache: RWArc::new(LruCache::new(10)),
         }
     }
     
@@ -212,7 +217,7 @@ impl WebServer {
     
     // TODO: Streaming file.
     // TODO: Application-layer file caching.
-    fn respond_with_static_file(stream: Option<std::io::net::tcp::TcpStream>, path: &Path, cache: &mut LruCache<~str, ~[u8]>) {
+    fn respond_with_static_file(stream: Option<std::io::net::tcp::TcpStream>, path: &Path, cache: RWArc<LruCache<~str, ~[u8]>>) {
         let mut stream = stream;
         let mut file_reader = File::open(path).expect("Invalid file!");
         
@@ -232,44 +237,52 @@ impl WebServer {
         }
         */
         
-        
-        
-        let mut read_from_disk = false;
-        
-        
-        
-        match cache.get(&path_str) {
-	    Some(data) => {
-		if path_str.ends_with(".html") {
-		    stream.write(HTTP_OK_DEFLATE.as_bytes());
-		}else{
-		    stream.write(HTTP_OK_BIN_DEFLATE.as_bytes());
-		}
-		stream.write(*data);
-	    }
-	    None => {
-		if path_str.ends_with(".html") {
-		    stream.write(HTTP_OK.as_bytes());
-		}else{
-		    stream.write(HTTP_OK_BIN.as_bytes());
-		}
-		while !file_reader.eof() {
-		    match file_reader.read_byte() {
-			Some(bytes) => {
-			    storevec.push(bytes);
-			    stream.write_u8(bytes);
-			}
-			None => {}
-		    }
-		}
-		read_from_disk = true;
-	    }
+                
+        debug!("Waiting for LRU_Cache access for read... ");
+        let mut in_cache = true;
+        cache.write(|state| {
+            debug!("Received LRU_Cache read access!");
+            match state.get(&path_str) {
+                Some(data) => {
+                    if path_str.ends_with(".html") {
+                        stream.write(HTTP_OK_DEFLATE.as_bytes());
+                    }else{
+                        stream.write(HTTP_OK_BIN_DEFLATE.as_bytes());
+                    }
+                    stream.write(*data);
+                    }
+                None => {
+                    in_cache = false;
+                }
+            }
+        });
+        if in_cache == false {
+            if path_str.ends_with(".html") {
+                stream.write(HTTP_OK.as_bytes());
+            }else{
+                stream.write(HTTP_OK_BIN.as_bytes());
+            }
+            while !file_reader.eof() {
+                match file_reader.read_byte() {
+                    Some(bytes) => {
+                        storevec.push(bytes);
+                        stream.write_u8(bytes);
+                    }
+                    None => {}
+                }
+            }
+            debug!("Waiting for LRU_Cache access for write...")
+            cache.write(|state| {
+                debug!("Received LRU_Cache write access!");
+                state.put(path_str.clone(), deflate_bytes(storevec));
+            });
+            
         }
+            
+            //I know this is weird but its something to do with a double borrow...
+                        
         
-        //I know this is weird but its something to do with a double borrow...
-        if read_from_disk {
-	    cache.put(path_str, deflate_bytes(storevec));
-        }
+        
         
     }
     
@@ -391,10 +404,25 @@ impl WebServer {
             }
             
             // TODO: Spawinng more tasks to respond the dequeued requests concurrently. You may need a semophore to control the concurrency.
-            let stream = stream_port.recv();
-            WebServer::respond_with_static_file(stream, request.path, &mut self.cache);
-            // Close stream automatically.
-            debug!("=====Terminated connection from [{:s}].=====", request.peer_name);
+            let cacheclone = self.cache.clone();
+            let mut num_threads = -1;
+            while (num_threads < 0 || num_threads > 3*CORES_AVAILABLE) {
+                self.dequeue_task_count.read(|state| {
+                    num_threads = state.clone();
+                });
+            }
+            let dequeue_count_clone = self.dequeue_task_count.clone();
+            spawn(proc() {
+                dequeue_count_clone.write(|state| {
+                    *state += 1;
+                });
+                let stream = stream_port.recv();
+                WebServer::respond_with_static_file(stream, request.path, cacheclone);
+                debug!("=====Terminated connection from [{:s}].=====", request.peer_name);
+                dequeue_count_clone.write(|state| {
+                    *state -= 1;
+                });
+            });
         }
     }
     

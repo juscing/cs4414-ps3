@@ -132,7 +132,7 @@ impl WebServer {
                 // Spawn a task to handle the connection.
                 spawn(proc() {
                     countertwo.write(|state| {
-			*state += 1;
+			             *state += 1;
                     });
                     let request_queue_arc = queue_port.recv();
                   
@@ -164,7 +164,7 @@ impl WebServer {
                             debug!("===== Counter Page request =====");
                             let mut countcopy = 0;
                             countertwo.read(|state| {
-				countcopy = state.clone();
+				                countcopy = state.clone();
                             });
                             WebServer::respond_with_counter_page(stream, countcopy);
                             debug!("=====Terminated connection from [{:s}].=====", peer_name);
@@ -210,7 +210,7 @@ impl WebServer {
     fn respond_with_static_file(stream: Option<std::io::net::tcp::TcpStream>, path: &Path, cache: &mut LruCache<~str, ~[u8]>) {
         let mut stream = stream;
         let mut file_reader = File::open(path).expect("Invalid file!");
-        stream.write(HTTP_OK_BIN.as_bytes());
+        stream.write(HTTP_OK.as_bytes());
         
         let mut storevec: ~[u8] = ~[];
         //Justin's better file streaming...
@@ -244,13 +244,9 @@ impl WebServer {
 	    cache.put(path_str, storevec);
         }
         
-        //stream.write(file_reader.read_to_end());
     }
     
-    // TODO: Server-side gashing.
     fn respond_with_dynamic_page(stream: Option<std::io::net::tcp::TcpStream>, path: &Path) {
-        // for now, just serve as static file
-        //WebServer::respond_with_static_file(stream, path);
         let mut stream = stream;
         let mut file_reader = File::open(path).expect("Invalid file!");
         let file_content  = file_reader.read_to_end();
@@ -302,6 +298,14 @@ impl WebServer {
         }
         
         // Enqueue the HTTP request.
+        let temp = peer_name.slice_to(7);
+        //debug!("Testing WahooFirst")
+        let mut prioritize = false;
+        if ((temp == "128.143") || (temp == "137.54.")) {
+            debug!("WahooFirst Priority enabled for request!");
+            prioritize = true;
+        }
+        
         let req = HTTP_Request { peer_name: peer_name.clone(), path: ~path_obj.clone() };
         let (req_port, req_chan) = Chan::new();
         req_chan.send(req);
@@ -310,11 +314,15 @@ impl WebServer {
         req_queue_arc.access(|local_req_queue| {
             debug!("Got queue mutex lock.");
             let req: HTTP_Request = req_port.recv();
-            local_req_queue.push(req);
+            if (prioritize == false) {
+                local_req_queue.push(req);
+            } else {
+                local_req_queue.insert(0, req);
+            }
             debug!("A new request enqueued, now the length of queue is {:u}.", local_req_queue.len());
         });
         
-        notify_chan.send(()); // Send incoming notification to responder task.
+        notify_chan.send(()); //  incoming notification to responder task.
     
     
     }

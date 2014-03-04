@@ -31,9 +31,9 @@ use extra::getopts;
 use extra::arc::MutexArc;
 use extra::arc::RWArc;
 use extra::lru_cache::LruCache;
+use extra::flate::*;
 
 mod gash;
-mod gzip;
 
 
 static SERVER_NAME : &'static str = "Zhtta Version 0.5";
@@ -43,9 +43,12 @@ static PORT : uint = 4414;
 static WWW_DIR : &'static str = "./www";
 
 static HTTP_OK : &'static str = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n";
+static HTTP_OK_DEFLATE : &'static str = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Encoding: deflate\r\n\r\n";
+
 static HTTP_BAD : &'static str = "HTTP/1.1 404 Not Found\r\n\r\n";
 
-static HTTP_OK_BIN : &'static str = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream;";
+static HTTP_OK_BIN : &'static str = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream;\r\n\r\n";
+static HTTP_OK_BIN_DEFLATE : &'static str = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream;\r\nContent-Encoding: deflate\r\n\r\n";
 
 static COUNTER_STYLE : &'static str = "<doctype !html><html><head><title>Hello, Rust!</title>
              <style>body { background-color: #884414; color: #FFEEAA}
@@ -198,12 +201,13 @@ impl WebServer {
     fn respond_with_counter_page(stream: Option<std::io::net::tcp::TcpStream>, count: uint) {
         let mut stream = stream;
         let response: ~str = 
-            format!("{:s}{:s}<h1>Greetings, Krusty!</h1>
+            format!("{:s}<h1>Greetings, Krusty!</h1>
                      <h2>Visitor count: {:u}</h2></body></html>\r\n", 
-                    HTTP_OK, COUNTER_STYLE, 
+                    COUNTER_STYLE, 
                     count );
         debug!("Responding to counter request");
-        stream.write(response.as_bytes());
+        stream.write(HTTP_OK_DEFLATE.as_bytes());
+        stream.write(deflate_bytes(response.as_bytes()));
     }
     
     // TODO: Streaming file.
@@ -220,24 +224,40 @@ impl WebServer {
 	    None => {fail!("Path not representable in UTF-8");}
         };
         
-        
+        /*
         if path_str.ends_with(".html") {
-	    stream.write(gzip::must_compress(HTTP_OK.as_bytes()));
+	    stream.write(HTTP_OK.as_bytes());
         }else{
-	    stream.write(gzip::must_compress(HTTP_OK_BIN.as_bytes()));
+	    stream.write(HTTP_OK_BIN.as_bytes());
         }
+        */
+        
+        
         
         let mut read_from_disk = false;
         
+        
+        
         match cache.get(&path_str) {
-	    Some(data) => {stream.write(*data);}
+	    Some(data) => {
+		if path_str.ends_with(".html") {
+		    stream.write(HTTP_OK_DEFLATE.as_bytes());
+		}else{
+		    stream.write(HTTP_OK_BIN_DEFLATE.as_bytes());
+		}
+		stream.write(*data);
+	    }
 	    None => {
+		if path_str.ends_with(".html") {
+		    stream.write(HTTP_OK.as_bytes());
+		}else{
+		    stream.write(HTTP_OK_BIN.as_bytes());
+		}
 		while !file_reader.eof() {
 		    match file_reader.read_byte() {
 			Some(bytes) => {
-			    let comp = gzip::must_compress(bytes);
-			    storevec.push(comp);
-			    stream.write_u8(comp);
+			    storevec.push(bytes);
+			    stream.write_u8(bytes);
 			}
 			None => {}
 		    }
@@ -248,8 +268,7 @@ impl WebServer {
         
         //I know this is weird but its something to do with a double borrow...
         if read_from_disk {
-	    
-	    cache.put(path_str, storevec);
+	    cache.put(path_str, deflate_bytes(storevec));
         }
         
     }
@@ -262,12 +281,12 @@ impl WebServer {
 
         let split_content: ~[&str]  = raw_content.split_str("<!--").collect();
         if split_content.len() == 1 {
-            stream.write(HTTP_OK.as_bytes());
-            stream.write(raw_content.as_bytes());
+            stream.write(HTTP_OK_DEFLATE.as_bytes());
+            stream.write(deflate_bytes(raw_content.as_bytes()));
         } else {
-            stream.write(HTTP_OK.as_bytes());
+            stream.write(HTTP_OK_DEFLATE.as_bytes());
+            let mut resvec: ~[u8] = ~[];
             for i in range (0, split_content.len()) {
-
                 let content: ~[&str]  = split_content[i].split_str("-->").collect();
                 if content.len() > 1 {
                     match content[0].slice_to(10) {
@@ -275,7 +294,8 @@ impl WebServer {
                             let cmd: ~[&str] = content[0].split('"').collect();
                             let response = gash::run_cmdline(cmd[1]);
 
-                            stream.write(response.as_bytes());
+                            //stream.write(response.as_bytes());
+                            resvec.push_all_move(response.as_bytes().into_owned());
                         }
                         _ => {
                             debug!("This command doesn't seem to make sense: {:s}", content[0])
@@ -283,9 +303,11 @@ impl WebServer {
                     }
 
                 } else {
-                    stream.write(split_content[i].as_bytes());
+                    //stream.write(split_content[i].as_bytes());
+                    resvec.push_all_move(split_content[i].as_bytes().into_owned());
                 }
             }
+            stream.write(deflate_bytes(resvec));
         }
         
     }

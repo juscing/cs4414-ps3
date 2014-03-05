@@ -29,7 +29,6 @@ use std::io::buffered::BufferedReader;
 use extra::getopts;
 use extra::arc::MutexArc;
 use extra::arc::RWArc;
-use extra::lru_cache::LruCache;
 use extra::flate::*;
 
 mod gash;
@@ -83,7 +82,7 @@ struct WebServer {
 
     WahooFirst_count: RWArc<uint>,
     
-    cache: RWArc<LruCache<~str, ~[u8]>>,
+    cache: RWArc<HashMap<~str, ~[u8]>>,
     
     thread_chan: SharedChan<()>,
     thread_port: Port<()>,
@@ -113,7 +112,7 @@ impl WebServer {
 
             dequeue_task_count: RWArc::new(0),
             
-            cache: RWArc::new(LruCache::new(10)),
+            cache: RWArc::new(HashMap::new()),
             
             thread_chan: thread_chan,
 	    thread_port: thread_port,
@@ -231,11 +230,11 @@ impl WebServer {
     
     // TODO: Streaming file.
     // TODO: Application-layer file caching.
-    fn respond_with_static_file(stream: Option<std::io::net::tcp::TcpStream>, path: &Path, cache: RWArc<LruCache<~str, ~[u8]>>) {
+    fn respond_with_static_file(stream: Option<std::io::net::tcp::TcpStream>, path: &Path, cache: RWArc<HashMap<~str, ~[u8]>>) {
         let mut stream = stream;
         
         
-        let mut storevec: ~[u8] = ~[];
+        
         //Justin's better file streaming...
         
         let path_str = match path.as_str() {
@@ -246,8 +245,56 @@ impl WebServer {
                 
         debug!("Waiting for LRU_Cache access for read... ");
         let mut in_cache = true;
-        cache.write(|state| {
-            debug!("Received LRU_Cache read access!");
+        cache.read(|state| {
+            debug!("Received Cache read access!");
+            let mut doit = false;
+            if state.contains_key(&path_str) {
+		debug!("Already in Cache!");
+		if path_str.ends_with(".html") {
+		    stream.write(HTTP_OK_DEFLATE.as_bytes());
+                }else{
+                    stream.write(HTTP_OK_BIN_DEFLATE.as_bytes());
+                }
+                doit = true;
+            } else {
+		in_cache = false;
+            }
+            if doit {
+		stream.write(state.get(&path_str).clone());
+            }
+        });
+        if !in_cache {
+	    let mut storevec: ~[u8] = ~[];
+	    
+		let file_reader = File::open(path).expect("Invalid file!");
+		let mut br = BufferedReader::new(file_reader);
+		if path_str.ends_with(".html") {
+		    stream.write(HTTP_OK.as_bytes());
+		}else{
+		    stream.write(HTTP_OK_BIN.as_bytes());
+		}
+		let mut zeros = 0;
+		while !br.eof() && zeros < 10 {
+		    let mut l = 0;
+		    {
+			let x = br.fill();
+			l = x.len();
+			stream.write(x);
+			storevec.push_all_move(x.into_owned());
+		    }
+		    br.consume(l);
+		    debug!("{:u}", l);
+		    if l == 0 {
+			zeros = zeros + 1;
+		    }
+		}
+		debug!("exit while");
+		let deflate = deflate_bytes(storevec);
+	    cache.write(|state| {
+		state.insert(path_str.clone(), deflate.clone());
+	    });
+        }
+            /*
             match state.get(&path_str) {
                 Some(data) => {
                     debug!("Already in Cache!");
@@ -292,6 +339,7 @@ impl WebServer {
 		state.put(path_str.clone(), deflate_bytes(storevec));
 	    }
         });
+        */
         /*if in_cache == false {
             let file_reader = File::open(path).expect("Invalid file!");
             let mut br = BufferedReader::new(file_reader);
@@ -508,9 +556,13 @@ impl WebServer {
                 WebServer::respond_with_static_file(stream, request.path, cacheclone);
                 debug!("=====Terminated connection from [{:s}].=====", request.peer_name);
                 dequeue_count_clone.write(|state| {
+                    if *state > 3 {
+			thread_chan_send.send(());
+                    }
                     *state -= 1;
+                    
                 });
-                thread_chan_send.send(());
+                
             });
         }
     }

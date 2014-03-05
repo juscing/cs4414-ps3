@@ -84,6 +84,9 @@ struct WebServer {
     WahooFirst_count: RWArc<uint>,
     
     cache: RWArc<LruCache<~str, ~[u8]>>,
+    
+    thread_chan: SharedChan<()>,
+    thread_port: Port<()>,
 }
 
 impl WebServer {
@@ -92,6 +95,8 @@ impl WebServer {
         let www_dir_path = ~Path::new(www_dir);
         os::change_dir(www_dir_path.clone());
 
+        let (thread_port, thread_chan) = SharedChan::new();
+        
         WebServer {
             ip: ip.to_owned(),
             port: port,
@@ -109,6 +114,9 @@ impl WebServer {
             dequeue_task_count: RWArc::new(0),
             
             cache: RWArc::new(LruCache::new(10)),
+            
+            thread_chan: thread_chan,
+	    thread_port: thread_port,
         }
     }
     
@@ -252,10 +260,39 @@ impl WebServer {
                     }
                 None => {
                     in_cache = false;
-                }
+                    let file_reader = File::open(path).expect("Invalid file!");
+		    let mut br = BufferedReader::new(file_reader);
+		    debug!("Not in the Cache...");
+		    if path_str.ends_with(".html") {
+			stream.write(HTTP_OK.as_bytes());
+		    }else{
+			stream.write(HTTP_OK_BIN.as_bytes());
+		    }
+		    let mut zeros = 0;
+		    while !br.eof() && zeros < 10 {
+			let mut l = 0;
+			{
+			    let x = br.fill();
+			    l = x.len();
+			    stream.write(x);
+			    storevec.push_all_move(x.into_owned());
+			}
+			br.consume(l);
+			debug!("{:u}", l);
+			if l == 0 {
+			    zeros = zeros + 1;
+			}
+		    }
+		    debug!("exit while");
+		    
+		}
+            
             }
+            if in_cache == false {
+		state.put(path_str.clone(), deflate_bytes(storevec));
+	    }
         });
-        if in_cache == false {
+        /*if in_cache == false {
             let file_reader = File::open(path).expect("Invalid file!");
             let mut br = BufferedReader::new(file_reader);
             debug!("Not in the Cache...");
@@ -265,6 +302,7 @@ impl WebServer {
                 stream.write(HTTP_OK_BIN.as_bytes());
             }
             while !br.eof() {
+		*/
 		/*
                 match file_reader.read_byte() {
                     Some(bytes) => {
@@ -274,6 +312,7 @@ impl WebServer {
                     None => {}
                 }
                 */
+                /*
                 let l;
                 {
 		    let x = br.fill();
@@ -289,7 +328,7 @@ impl WebServer {
                 state.put(path_str.clone(), deflate_bytes(storevec));
             });
             
-        }
+        }*/
             
             //I know this is weird but its something to do with a double borrow...
                         
@@ -445,12 +484,22 @@ impl WebServer {
             
             let cacheclone = self.cache.clone();
             let mut num_threads = -1;
+            /*
             while (num_threads < 0 || num_threads > 3*CORES_AVAILABLE) {
                 self.dequeue_task_count.read(|state| {
                     num_threads = state.clone();
                 });
             }
+            */
+            self.dequeue_task_count.read(|state| {
+		num_threads = state.clone();
+            });
+            
             let dequeue_count_clone = self.dequeue_task_count.clone();
+            let thread_chan_send = self.thread_chan.clone();
+            if num_threads > 3*CORES_AVAILABLE {
+		self.thread_port.recv();
+            }
             spawn(proc() {
                 dequeue_count_clone.write(|state| {
                     *state += 1;
@@ -461,6 +510,7 @@ impl WebServer {
                 dequeue_count_clone.write(|state| {
                     *state -= 1;
                 });
+                thread_chan_send.send(());
             });
         }
     }
